@@ -1,0 +1,1 @@
+python tools/test.py --cfg experiments/mars/w48_256x192_adam_lr1e-3_imagenet_pretrain.yaml
