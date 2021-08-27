@@ -74,6 +74,7 @@ def parse_args():
 
 
 def main():
+    
     args = parse_args()
     update_config(cfg, args)
 
@@ -224,4 +225,5 @@ def main():
 
 
 if __name__ == '__main__':
-    main()
+    import sys
+    main(sys.argv[1:])

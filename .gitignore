@@ -1,0 +1,9 @@
+# git ignore file
+
+# ignore the raw image files
+MARS_*_*.jpg
+
+# ignore data files
+*.manifest
+*.json
+*.pyc

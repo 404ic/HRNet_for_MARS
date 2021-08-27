@@ -67,6 +67,7 @@ class MARSDataset(JointsDataset):
         self.image_height = cfg.MODEL.IMAGE_SIZE[1]
         self.aspect_ratio = self.image_width * 1.0 / self.image_height
         self.pixel_std = 200
+        self.view = cfg.DATASET.VIEW
 
         self.coco = COCO(self._get_ann_file_keypoint())
 
@@ -112,12 +113,11 @@ class MARSDataset(JointsDataset):
 
     def _get_ann_file_keypoint(self):
         """ self.root / annotations / person_keypoints_train2017.json """
-        prefix = 'person_keypoints' \
-            if 'test' not in self.image_set else 'person_keypoints'
+        prefix = 'keypoints' 
         return os.path.join(
             self.root,
             'annotations',
-            prefix + '_' + self.image_set + '.json'
+            prefix + '_' + self.view + '_' + self.image_set + '.json'
         )
 
     def _load_image_set_index(self):
@@ -231,19 +231,14 @@ class MARSDataset(JointsDataset):
         return center, scale
 
     def image_path_from_index(self, index):
-        """ example: images / train2017 / 000000119993.jpg """
-        file_name = '%06d.jpg' % index
-        # if '2014' in self.image_set:
-        #     file_name = 'COCO_%s_' % self.image_set + file_name
-
-        # prefix = 'test2017' if 'test' in self.image_set else self.image_set
-
-        prefix = self.image_set
-
-        data_name = prefix + '.zip@' if self.data_format == 'zip' else prefix
+        """ 
+        example: images / MARS_front_11942.jpg 
+        self.view should either be front or top for MARS dataset
+        """
+        file_name = 'MARS_' + self.view + '_' + '%05d.jpg' % index
 
         image_path = os.path.join(
-            self.root, 'images', data_name, file_name)
+            self.root, 'images', file_name)
 
         return image_path
 
@@ -330,6 +325,7 @@ class MARSDataset(JointsDataset):
         rank = cfg.RANK
 
         res_folder = os.path.join(output_dir, 'results')
+        self.res_folder = res_folder
         if not os.path.exists(res_folder):
             try:
                 os.makedirs(res_folder)
@@ -350,7 +346,7 @@ class MARSDataset(JointsDataset):
                 'scale': all_boxes[idx][2:4],
                 'area': all_boxes[idx][4],
                 'score': all_boxes[idx][5],
-                'image': int(img_path[idx][-10:-4])
+                'image': int(img_path[idx].split('_')[-1].split('.')[0])
             })
         # image x person x (keypoints)
         kpts = defaultdict(list)
@@ -399,10 +395,9 @@ class MARSDataset(JointsDataset):
         if 'test' not in self.image_set or 1 == 1:
             info_str, performance = self._do_python_keypoint_eval(
                 res_file, res_folder)
-            self._pr_curve(res_folder, performance)
             self._format_to_MARS_Developer_dict_format(res_file, res_folder)
             perfs = self._coco_eval(res_folder)
-            self._plot_model_PCK(res_folder, perfs, xlim=[-0.03, 1.03], combine_animals=True, print_PCK_values=True)
+            self._plot_model_PCK(res_folder, perfs, xlim=[0.0, 3.0], combine_animals=True, print_PCK_values=True)
             name_value = OrderedDict(info_str)
             return name_value, name_value['AP']
         else:
@@ -473,42 +468,69 @@ class MARSDataset(JointsDataset):
 
     def _do_python_keypoint_eval(self, res_file, res_folder):
         coco_dt = self.coco.loadRes(res_file)
+        # with open(os.path.join(res_folder, 'pred_results.json'), 'w') as f:
+        #     json.dump(coco_dt, f)
+        # with open(os.path.join(res_folder, 'gt_results.json'), 'w') as f:
+        #     json.dump(self.coco, f)
         parts = ["nose tip", "right ear", "left ear", "neck", "right side body", "left side body", "tail base"]
         coco_eval = COCOeval(self.coco, coco_dt, 'keypoints', sigmaType='MARS_top', useParts=parts)
         coco_eval.params.useSegm = None
         coco_eval.evaluate()
         coco_eval.accumulate()
+        # with open(os.path.join(res_folder, 'coco_eval.json'), 'w') as f:
+        #     json.dump(coco_eval, f)
         coco_eval.summarize()
         stats_names = ['AP', 'AR']
-        # pprint(coco_eval.eval['precision'])
-        # pprint(coco_eval.eval['recall'])
         info_str = []
         for ind, name in enumerate(stats_names):
             info_str.append((name, coco_eval.stats[ind]))
         return info_str, coco_eval
 
-    def _compute_model_pck(self, cocoEval, lims=None, pixels_per_cm=None, pixel_units=False):
+    def compute_model_pck_EXTERNAL(self, category_id):
+        with open(os.path.join(self.res_folder, 'MARS_format.json'), 'r') as f:
+            data = json.load(f)
+        assert data is not None
+        gt_keypoints = data['gt_keypoints']['annotations']
+        pred_keypoints = data['pred_keypoints']
 
+        assert len(gt_keypoints) == len(pred_keypoints), 'Lengths of predicted and ground truth keypoints don\'t match'
+
+        all_data = []
+
+        for i in range(len(gt_keypoints)):
+            gt = gt_keypoints[i]
+            pred = pred_keypoints[i]
+            assert gt['image_id'] == pred['image_id'], str(gt['image_id']) + ' ' + str(pred['image_id'])
+            assert gt['category_id'] == pred['category_id'], 'Category IDs do not match'
+            if gt['category_id'] == category_id:
+                all_data.append([
+                    self.average_distance(gt['keypoints'], pred['keypoints']) / 1.0,
+                    float(pred['score']),
+                    int(gt['image_id'])
+                ])
+        all_data.sort(key=lambda x: x[0])
+        distances = [x[0] for x in all_data]
+
+        return distances
+
+    def _compute_model_pck(self, cocoEval, lims=None, pixels_per_cm=None, pixel_units=False):
         bins = 10000
         pck = []
         partID = list(cocoEval.cocoGt.catToImgs.keys())[0]  # which body part are we looking at?
-        for i in cocoEval.params.imgIds:
-            # pprint(cocoEval._gts)
-            # pprint(cocoEval.ious)
-            # pprint(i)
-            # pprint(partID)
-            # pprint(cocoEval._gts[i, partID])
-            pck.append(cocoEval.computePcks(int(i), partID)[0])
+        # for i in cocoEval.params.imgIds:
+        #     pck.append(cocoEval.computePcks(int(i), partID)[0])
+        pck = self.compute_model_pck_EXTERNAL(partID)
         pck = np.array(pck)
 
         if not lims:
             lims = [0, max(pck)]
-
+        print(len(pck))
         counts, binedges = np.histogram(pck, bins, range=lims)
         counts = counts / len(pck)
+        # print(sum(counts))
         binctrs = (binedges[:-1] + binedges[1:]) / 2
         if not pixel_units:
-            binctrs = binctrs / pixels_per_cm
+            binctrs = (np.array(binctrs) / pixels_per_cm).tolist()
 
         return counts, binctrs
     
@@ -516,7 +538,7 @@ class MARSDataset(JointsDataset):
 
     def _compute_human_PCK(self, animal_names, xlim=None, pixel_units=False):
         pixels_per_cm = 37.7
-        dictionary_file_path = os.path.join('/home/ericma/deep-high-resolution-net.pytorch/data/mars', 'test_processed_keypoints.json')
+        dictionary_file_path = os.path.join('annotations', 'processed_keypoints_' + self.view + '_' + self.image_set + '.json')
         if not os.path.exists(dictionary_file_path):
             assert 1 == 0, 'Must add the human annotation file to ' + dictionary_file_path
         with open(dictionary_file_path, 'r') as fp:
@@ -654,6 +676,8 @@ class MARSDataset(JointsDataset):
                             med = binctrs_model[sum((counts_model[label].cumsum()) < val)]
                             print(label + ' ' + str(val*100.) + '%: ' + "{:.3f}".format(med))
                     else:
+                        # print(counts_model[label].cumsum()[-1])
+                        # print(sum(binctrs_model))
                         med = binctrs_model[sum((counts_model[label].cumsum()) < 0.5)]
                         print(label + ' 50%: ' + "{:.3f}".format(med))
                         med = binctrs_model[sum((counts_model[label].cumsum()) < 0.9)]
@@ -793,6 +817,40 @@ class MARSDataset(JointsDataset):
                 }
             )
             data['gt_keypoints']['images'].append({'id': int(frame['image_id'])})
+
+        # this part is hardcoded for 2 mice
+        pred = data['pred_keypoints']
+        gt = data['gt_keypoints']['annotations']
+        for i in range(0, len(pred), 16):
+            if self.average_distance(pred[i+7]['keypoints'], gt[i+7]['keypoints']) > self.average_distance(pred[i+7+8]['keypoints'], gt[i+7]['keypoints']):
+                for j in range(8):
+                    pred[i+j], pred[i+j+8] = pred[i+j+8], pred[i+j]
+            else:
+                continue
+        
         with open(os.path.join(res_folder, 'MARS_format.json'), 'w') as f:
             json.dump(data, f)
         return data
+
+    def clean_coords(self, x):
+        y = []
+        for i in range(len(x)):
+            if (i + 1) % 3 == 0:
+                continue
+            else:
+                y.append(x[i])
+        return y
+
+    def distance_between_keypoints(self, a, b):
+        return np.sqrt(np.sum(np.square(np.array(self.clean_coords(a)) - np.array(self.clean_coords(b)))))
+
+    def average_distance(self, a, b):
+        a = self.clean_coords(a)
+        b = self.clean_coords(b)
+        assert len(a) == len(b)
+        cumulative_distance = 0
+        for i in range(len(a)):
+            if i % 2 == 1:
+                continue
+            cumulative_distance += self.distance_between_keypoints(a[i:i+2], b[i:i+2])
+        return cumulative_distance / (len(a) / 2)

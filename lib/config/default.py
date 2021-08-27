@@ -60,6 +60,7 @@ _C.DATASET.TEST_SET = 'valid'
 _C.DATASET.DATA_FORMAT = 'jpg'
 _C.DATASET.HYBRID_JOINTS_TYPE = ''
 _C.DATASET.SELECT_DATA = False
+_C.DATASET.VIEW = 'front'
 
 # training data augmentation
 _C.DATASET.FLIP = True
